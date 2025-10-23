@@ -4,13 +4,19 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
+	"gocount/internal/cgroups"
 	"gocount/internal/container"
 
 	"github.com/spf13/cobra"
 )
 
+var (
+	flagMemory string
+	flagCPU    string
+)
 var runCmd = &cobra.Command{
 	Use:   "run [command]",
 	Short: "Run a command in a new container",
@@ -24,11 +30,28 @@ var runCmd = &cobra.Command{
 		id := container.GenerateID()
 		fmt.Println("Starting container:", id, "command:", args)
 
+		// create cgroup before starting the child so we can configure limits
+		cgPath, err := cgroups.Create(id)
+		if err != nil {
+			fmt.Println("Error creating cgroup:", err)
+			os.Exit(1)
+		}
+		// set limits if provided (ignore errors but print)
+		if err := cgroups.SetMemoryLimit(cgPath, flagMemory); err != nil {
+			fmt.Println("Warning: cannot set memory limit:", err)
+		}
+		if err := cgroups.SetCPUQuota(cgPath, flagCPU); err != nil {
+			fmt.Println("Warning: cannot set cpu quota:", err)
+		}
+
 		command := exec.Command("/proc/self/exe", append([]string{"run"}, args...)...)
 		command.Stdin = os.Stdin
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr
-		command.Env = append(os.Environ(), "GOCOUNT_CHILD=1")
+		command.Env = append(os.Environ(),
+			"GOCOUNT_CHILD=1",
+			"GOCOUNT_CONTAINER_ID="+id,
+		)
 
 		command.SysProcAttr = &syscall.SysProcAttr{
 			Cloneflags: syscall.CLONE_NEWUSER |
@@ -47,6 +70,7 @@ var runCmd = &cobra.Command{
 			fmt.Println("Error:", err)
 			os.Exit(1)
 		}
+
 		// Register in memory
 		c := &container.Container{
 			ID:      id,
@@ -54,6 +78,7 @@ var runCmd = &cobra.Command{
 			Command: args,
 			Status:  "running",
 			RootFs:  "./rootfs",
+			Cgroup:  cgPath,
 		}
 		container.Containers[id] = c
 
@@ -72,13 +97,26 @@ var runCmd = &cobra.Command{
 }
 
 func childSetup(args []string) {
+	// Add self to cgroup FIRST, before doing anything else
+	containerID := os.Getenv("GOCOUNT_CONTAINER_ID")
+	if containerID != "" {
+		cgPath := filepath.Join("/sys/fs/cgroup", "gocount", containerID)
+		pid := os.Getpid()
+		if err := cgroups.AddProc(cgPath, pid); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot add self to cgroup: %v\n", err)
+		}
+	}
+
 	syscall.Sethostname([]byte("gocount"))
 	syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, "")
 	syscall.Unmount("/proc", syscall.MNT_DETACH)
 	syscall.Mount("proc", "/proc", "proc", 0, "")
 	syscall.Exec(args[0], args, os.Environ())
 }
-
 func init() {
 	rootCmd.AddCommand(runCmd)
+
+	// Add flags
+	runCmd.Flags().StringVar(&flagMemory, "memory", "", "Memory limit for container (e.g. 100M)")
+	runCmd.Flags().StringVar(&flagCPU, "cpu", "", "CPU quota for container (cgroup v2 format: 'max' or '<quota> <period>')")
 }

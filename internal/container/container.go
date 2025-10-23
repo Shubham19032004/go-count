@@ -14,6 +14,7 @@ type Container struct {
 	Command []string
 	Status  string
 	RootFs  string
+	Cgroup  string
 }
 
 var Containers = map[string]*Container{}

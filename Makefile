@@ -5,7 +5,7 @@ BIN_DIR = bin
 BINARY_NAME = gocount
 
 container:
-	sudo $(GOCMD) run main.go run /bin/bash
+	sudo /usr/local/go/bin/go run main.go run /bin/bash
 
 ps:
 	sudo $(GOCMD) run main.go ps
