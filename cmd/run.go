@@ -96,6 +96,73 @@ var runCmd = &cobra.Command{
 	},
 }
 
+
+var startCmd=&cobra.Command{
+	Use:   "start [container_id]",
+	Short: "Start an existing stopped container",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		id := args[0]
+		c, ok := container.Containers[id]
+		if !ok {
+			// Load from disk if not in memory
+			containers, _ := container.LoadContainers()
+			for _, cc := range containers {
+				if cc.ID == id {
+					c = cc
+					break
+				}
+			}
+		}
+
+		if c == nil {
+			fmt.Println("Container not found:", id)
+			return
+		}
+
+		fmt.Println("Starting container:", id, "command:", c.Command)
+		
+		// Fork a new process to run the container
+		command := exec.Command("/proc/self/exe", append([]string{"run"}, c.Command...)...)
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		command.Env = append(os.Environ(),
+			"GOCOUNT_CHILD=1",
+			"GOCOUNT_CONTAINER_ID="+id,
+		)
+
+		command.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags: syscall.CLONE_NEWUSER |
+				syscall.CLONE_NEWUTS |
+				syscall.CLONE_NEWPID |
+				syscall.CLONE_NEWNS,
+			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		}
+
+		if err := command.Start(); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+
+		// Update container info
+		c.Pid = command.Process.Pid
+		c.Status = "running"
+
+		// Save updated status
+		if err := container.SaveContainer(c); err != nil {
+			fmt.Println("Error saving container:", err)
+		}
+
+		if err := command.Wait(); err != nil {
+			fmt.Println("Error:", err)
+		}
+	},
+}	
+
+
+
 func childSetup(args []string) {
 	// Add self to cgroup FIRST, before doing anything else
 	containerID := os.Getenv("GOCOUNT_CONTAINER_ID")
@@ -113,10 +180,14 @@ func childSetup(args []string) {
 	syscall.Mount("proc", "/proc", "proc", 0, "")
 	syscall.Exec(args[0], args, os.Environ())
 }
+
+
 func init() {
 	rootCmd.AddCommand(runCmd)
 
 	// Add flags
 	runCmd.Flags().StringVar(&flagMemory, "memory", "", "Memory limit for container (e.g. 100M)")
 	runCmd.Flags().StringVar(&flagCPU, "cpu", "", "CPU quota for container (cgroup v2 format: 'max' or '<quota> <period>')")
+
+	rootCmd.AddCommand(startCmd)
 }
