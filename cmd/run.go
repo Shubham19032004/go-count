@@ -9,6 +9,7 @@ import (
 
 	"gocount/internal/cgroups"
 	"gocount/internal/container"
+	"gocount/internal/rootfs"
 
 	"github.com/spf13/cobra"
 )
@@ -17,26 +18,37 @@ var (
 	flagMemory string
 	flagCPU    string
 )
+
 var runCmd = &cobra.Command{
 	Use:   "run [command]",
 	Short: "Run a command in a new container",
 	Args:  cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		// Check if we're the child process FIRST
 		if os.Getenv("GOCOUNT_CHILD") == "1" {
 			childSetup(args)
 			return
 		}
 
+		// Parent process - generate ID and setup
 		id := container.GenerateID()
 		fmt.Println("Starting container:", id, "command:", args)
+		rootdir := "/tmp/gocount/" + id + "/rootfs"
 
-		// create cgroup before starting the child so we can configure limits
+		// Ensure rootfs exists before starting container
+		if err := rootfs.EnsureRootfs(rootdir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error setting up rootfs: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Create cgroup before starting the child so we can configure limits
 		cgPath, err := cgroups.Create(id)
 		if err != nil {
 			fmt.Println("Error creating cgroup:", err)
 			os.Exit(1)
 		}
-		// set limits if provided (ignore errors but print)
+
+		// Set limits if provided (ignore errors but print)
 		if err := cgroups.SetMemoryLimit(cgPath, flagMemory); err != nil {
 			fmt.Println("Warning: cannot set memory limit:", err)
 		}
@@ -51,16 +63,15 @@ var runCmd = &cobra.Command{
 		command.Env = append(os.Environ(),
 			"GOCOUNT_CHILD=1",
 			"GOCOUNT_CONTAINER_ID="+id,
+			"GOCOUNT_ROOTFS="+rootdir,
 		)
 
 		command.SysProcAttr = &syscall.SysProcAttr{
-			Cloneflags: syscall.CLONE_NEWUSER |
-				syscall.CLONE_NEWUTS |
+			Cloneflags: syscall.CLONE_NEWUTS |
 				syscall.CLONE_NEWPID |
 				syscall.CLONE_NEWNS,
-			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 		}
+
 		if err := container.EnsureContainerDir(); err != nil {
 			fmt.Println("Error creating container dir:", err)
 			os.Exit(1)
@@ -77,7 +88,7 @@ var runCmd = &cobra.Command{
 			Pid:     command.Process.Pid,
 			Command: args,
 			Status:  "running",
-			RootFs:  "./rootfs",
+			RootFs:  rootdir,
 			Cgroup:  cgPath,
 		}
 		container.Containers[id] = c
@@ -88,7 +99,7 @@ var runCmd = &cobra.Command{
 		}
 
 		// Register container
-		container.AddContainer(id, command.Process.Pid, args, "./rootfs")
+		container.AddContainer(id, command.Process.Pid, args, rootdir)
 
 		if err := command.Wait(); err != nil {
 			fmt.Println("Error:", err)
@@ -96,8 +107,7 @@ var runCmd = &cobra.Command{
 	},
 }
 
-
-var startCmd=&cobra.Command{
+var startCmd = &cobra.Command{
 	Use:   "start [container_id]",
 	Short: "Start an existing stopped container",
 	Args:  cobra.ExactArgs(1),
@@ -121,7 +131,7 @@ var startCmd=&cobra.Command{
 		}
 
 		fmt.Println("Starting container:", id, "command:", c.Command)
-		
+
 		// Fork a new process to run the container
 		command := exec.Command("/proc/self/exe", append([]string{"run"}, c.Command...)...)
 		command.Stdin = os.Stdin
@@ -130,15 +140,13 @@ var startCmd=&cobra.Command{
 		command.Env = append(os.Environ(),
 			"GOCOUNT_CHILD=1",
 			"GOCOUNT_CONTAINER_ID="+id,
+			"GOCOUNT_ROOTFS="+c.RootFs,
 		)
 
 		command.SysProcAttr = &syscall.SysProcAttr{
-			Cloneflags: syscall.CLONE_NEWUSER |
-				syscall.CLONE_NEWUTS |
+			Cloneflags: syscall.CLONE_NEWUTS |
 				syscall.CLONE_NEWPID |
 				syscall.CLONE_NEWNS,
-			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 		}
 
 		if err := command.Start(); err != nil {
@@ -159,12 +167,16 @@ var startCmd=&cobra.Command{
 			fmt.Println("Error:", err)
 		}
 	},
-}	
-
-
+}
 
 func childSetup(args []string) {
-	// Add self to cgroup FIRST, before doing anything else
+	// Get rootfs path from environment (set by parent)
+	rootfsPath := os.Getenv("GOCOUNT_ROOTFS")
+	if rootfsPath == "" {
+		fmt.Fprintf(os.Stderr, "Error: GOCOUNT_ROOTFS not set\n")
+		os.Exit(1)
+	}
+
 	containerID := os.Getenv("GOCOUNT_CONTAINER_ID")
 	if containerID != "" {
 		cgPath := filepath.Join("/sys/fs/cgroup", "gocount", containerID)
@@ -174,13 +186,23 @@ func childSetup(args []string) {
 		}
 	}
 
-	syscall.Sethostname([]byte("gocount"))
-	syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, "")
-	syscall.Unmount("/proc", syscall.MNT_DETACH)
-	syscall.Mount("proc", "/proc", "proc", 0, "")
-	syscall.Exec(args[0], args, os.Environ())
-}
+	// Setup mounts (includes pivot_root)
+	if err := container.SetupMount(rootfsPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Mount setup failed: %v\n", err)
+		os.Exit(1)
+	}
 
+	// Set hostname
+	if err := syscall.Sethostname([]byte("gocount")); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to set hostname: %v\n", err)
+	}
+
+	// Execute the target command
+	if err := syscall.Exec(args[0], args, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to exec: %v\n", err)
+		os.Exit(1)
+	}
+}
 
 func init() {
 	rootCmd.AddCommand(runCmd)
