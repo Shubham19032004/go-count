@@ -6,9 +6,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"gocount/internal/cgroups"
 	"gocount/internal/container"
+	"gocount/internal/network"
 	"gocount/internal/rootfs"
 
 	"github.com/spf13/cobra"
@@ -69,7 +71,8 @@ var runCmd = &cobra.Command{
 		command.SysProcAttr = &syscall.SysProcAttr{
 			Cloneflags: syscall.CLONE_NEWUTS |
 				syscall.CLONE_NEWPID |
-				syscall.CLONE_NEWNS,
+				syscall.CLONE_NEWNS |
+				syscall.CLONE_NEWNET,
 		}
 
 		if err := container.EnsureContainerDir(); err != nil {
@@ -80,6 +83,12 @@ var runCmd = &cobra.Command{
 		if err := command.Start(); err != nil {
 			fmt.Println("Error:", err)
 			os.Exit(1)
+		}
+
+		// NOW setup the veth pair from the parent side
+		// The child process exists and has its network namespace
+		if err := network.SetupVethPair(id, command.Process.Pid); err != nil {
+			fmt.Println("Warning: network setup failed:", err)
 		}
 
 		// Register in memory
@@ -157,6 +166,10 @@ var startCmd = &cobra.Command{
 		// Update container info
 		c.Pid = command.Process.Pid
 		c.Status = "running"
+		err := network.SetupVethPair(id, c.Pid)
+		if err != nil {
+			fmt.Println("Error setting up veth:", err)
+		}
 
 		// Save updated status
 		if err := container.SaveContainer(c); err != nil {
@@ -195,6 +208,15 @@ func childSetup(args []string) {
 	// Set hostname
 	if err := syscall.Sethostname([]byte("gocount")); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to set hostname: %v\n", err)
+	}
+
+	// Wait a moment for parent to setup veth pair
+	// This is a simple synchronization - in production you'd use proper IPC
+	time.Sleep(100 * time.Millisecond)
+
+	// Now configure the network inside the container
+	if err := container.SetupNetworkInsideContainer(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: network setup failed: %v\n", err)
 	}
 
 	// Execute the target command

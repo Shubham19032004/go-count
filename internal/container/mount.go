@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 func SetupMount(rootfs string) error {
@@ -71,6 +73,69 @@ func SetupMount(rootfs string) error {
 	}
 	if err := syscall.Mount("tmpfs", "/dev", "tmpfs", syscall.MS_NOSUID|syscall.MS_STRICTATIME, "mode=755"); err != nil {
 		return fmt.Errorf("mount /dev failed: %v", err)
+	}
+
+	// Create essential device nodes in /dev
+	if err := createDeviceNodes(); err != nil {
+		return fmt.Errorf("failed to create device nodes: %v", err)
+	}
+
+	return nil
+}
+
+func createDeviceNodes() error {
+	// Device nodes to create: name -> (type, major, minor, mode)
+	devices := []struct {
+		name  string
+		mode  uint32
+		major uint32
+		minor uint32
+	}{
+		{"null", syscall.S_IFCHR | 0666, 1, 3},
+		{"zero", syscall.S_IFCHR | 0666, 1, 5},
+		{"full", syscall.S_IFCHR | 0666, 1, 7},
+		{"random", syscall.S_IFCHR | 0666, 1, 8},
+		{"urandom", syscall.S_IFCHR | 0666, 1, 9},
+		{"tty", syscall.S_IFCHR | 0666, 5, 0},
+		{"console", syscall.S_IFCHR | 0600, 5, 1},
+	}
+
+	for _, dev := range devices {
+		path := filepath.Join("/dev", dev.name)
+		devNum := int(unix.Mkdev(dev.major, dev.minor))
+
+		if err := syscall.Mknod(path, dev.mode, devNum); err != nil {
+			// Ignore if already exists
+			if !os.IsExist(err) {
+				return fmt.Errorf("mknod %s: %v", dev.name, err)
+			}
+		}
+	}
+
+	// Create /dev/pts directory for pseudo-terminals
+	if err := os.MkdirAll("/dev/pts", 0755); err != nil {
+		return fmt.Errorf("failed to create /dev/pts: %v", err)
+	}
+
+	// Create /dev/shm for shared memory
+	if err := os.MkdirAll("/dev/shm", 0755); err != nil {
+		return fmt.Errorf("failed to create /dev/shm: %v", err)
+	}
+
+	// Create standard file descriptors symlinks
+	symlinks := map[string]string{
+		"/dev/fd":     "/proc/self/fd",
+		"/dev/stdin":  "/proc/self/fd/0",
+		"/dev/stdout": "/proc/self/fd/1",
+		"/dev/stderr": "/proc/self/fd/2",
+	}
+
+	for link, target := range symlinks {
+		os.Remove(link) // Remove if exists
+		if err := os.Symlink(target, link); err != nil {
+			// Non-critical, just log
+			fmt.Fprintf(os.Stderr, "Warning: failed to create symlink %s: %v\n", link, err)
+		}
 	}
 
 	return nil
