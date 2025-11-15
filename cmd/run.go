@@ -210,13 +210,35 @@ func childSetup(args []string) {
 		fmt.Fprintf(os.Stderr, "Failed to set hostname: %v\n", err)
 	}
 
-	// Wait a moment for parent to setup veth pair
-	// This is a simple synchronization - in production you'd use proper IPC
-	time.Sleep(100 * time.Millisecond)
+	// Wait for parent to setup veth pair with retry logic
+	fmt.Println("DEBUG: Waiting for network interface...")
+	maxRetries := 50 // 5 seconds total
+	var networkReady bool
+	for i := 0; i < maxRetries; i++ {
+		cmd := exec.Command("ip", "link", "show", "eth0")
+		if err := cmd.Run(); err == nil {
+			networkReady = true
+			fmt.Println("DEBUG: Network interface ready")
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !networkReady {
+		fmt.Fprintf(os.Stderr, "Warning: network interface not ready after waiting\n")
+	}
 
 	// Now configure the network inside the container
-	if err := container.SetupNetworkInsideContainer(); err != nil {
+	if err := network.SetupNetworkInsideContainer(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: network setup failed: %v\n", err)
+	}
+
+	// Verify network connectivity
+	fmt.Println("DEBUG: Testing network connectivity...")
+	if err := exec.Command("ping", "-c", "1", "-W", "2", "8.8.8.8").Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: No network connectivity (ping failed): %v\n", err)
+	} else {
+		fmt.Println("DEBUG: Network connectivity OK")
 	}
 
 	// Execute the target command

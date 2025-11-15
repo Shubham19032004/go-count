@@ -53,19 +53,30 @@ func SetupMount(rootfs string) error {
 		return fmt.Errorf("failed to remove old root: %v", err)
 	}
 
+	// === NEW: Setup DNS before mounting filesystems ===
+	if err := setupDNS(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: DNS setup failed: %v\n", err)
+	}
+
 	// Mount essential filesystems
 	if err := os.MkdirAll("/proc", 0555); err != nil {
 		return fmt.Errorf("failed to create /proc: %v", err)
 	}
 	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
-		return fmt.Errorf("mount /proc failed: %v", err)
+		// Ignore if already mounted
+		if err != syscall.EBUSY {
+			return fmt.Errorf("mount /proc failed: %v", err)
+		}
 	}
 
 	if err := os.MkdirAll("/sys", 0555); err != nil {
 		return fmt.Errorf("failed to create /sys: %v", err)
 	}
 	if err := syscall.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
-		return fmt.Errorf("mount /sys failed: %v", err)
+		// Ignore if already mounted
+		if err != syscall.EBUSY {
+			return fmt.Errorf("mount /sys failed: %v", err)
+		}
 	}
 
 	if err := os.MkdirAll("/dev", 0755); err != nil {
@@ -135,6 +146,55 @@ func createDeviceNodes() error {
 		if err := os.Symlink(target, link); err != nil {
 			// Non-critical, just log
 			fmt.Fprintf(os.Stderr, "Warning: failed to create symlink %s: %v\n", link, err)
+		}
+	}
+
+	return nil
+}
+func setupDNS() error {
+	// Create /etc directory if it doesn't exist
+	if err := os.MkdirAll("/etc", 0755); err != nil {
+		return fmt.Errorf("failed to create /etc: %v", err)
+	}
+
+	// Write resolv.conf with Google's DNS servers
+	resolvConfContent := "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"
+
+	if err := os.WriteFile("/etc/resolv.conf", []byte(resolvConfContent), 0644); err != nil {
+		return fmt.Errorf("failed to write resolv.conf: %v", err)
+	}
+
+	return nil
+}
+func MountEssentialFilesystems() error {
+	// Create mount points if they don't exist
+	mountPoints := []string{"/proc", "/sys", "/dev"}
+	for _, mp := range mountPoints {
+		if err := os.MkdirAll(mp, 0755); err != nil {
+			return fmt.Errorf("failed to create %s directory: %w", mp, err)
+		}
+	}
+
+	// Mount /proc
+	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+		// Don't fail if already mounted
+		if !os.IsExist(err) {
+			return fmt.Errorf("failed to mount proc: %w", err)
+		}
+	}
+
+	// Mount /sys
+	if err := syscall.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("failed to mount sys: %w", err)
+		}
+	}
+
+	// Mount /dev (bind mount from host)
+	// Note: In a real container, you'd want devtmpfs or a proper /dev setup
+	if err := syscall.Mount("tmpfs", "/dev", "tmpfs", syscall.MS_NOSUID|syscall.MS_STRICTATIME, "mode=755"); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("failed to mount dev: %w", err)
 		}
 	}
 

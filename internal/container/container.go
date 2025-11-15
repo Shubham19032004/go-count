@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -52,6 +53,9 @@ func LoadContainers() ([]*Container, error) {
 	var containers []*Container
 	files, _ := os.ReadDir("/tmp/gocount")
 	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+			continue
+		}
 		data, _ := os.ReadFile("/tmp/gocount/" + f.Name())
 		var c Container
 		json.Unmarshal(data, &c)
