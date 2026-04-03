@@ -13,3 +13,8 @@ ps:
 build:
 	mkdir -p $(BIN_DIR)
 	GOEXPERIMENT=cgocheck2 $(GOCMD) build $(GO_LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME) ./main.go
+
+cm:
+	sudo /usr/local/go/bin/go run main.go run --memory 100M --cpu "100 100000" /bin/sh
+
+ 
