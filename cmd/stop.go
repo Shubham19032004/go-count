@@ -32,7 +32,6 @@ var stopCmd = &cobra.Command{
 			fmt.Println("Container not found:", id)
 			return
 		}
-
 		// Kill the container
 		err := syscall.Kill(c.Pid, syscall.SIGKILL)
 		if err != nil {
@@ -61,6 +60,10 @@ var removeCmd = &cobra.Command{
 					break
 				}
 			}
+		}
+		if c == nil {
+			fmt.Println("Container not found:", id)
+			return
 		}
 		if c.Pid > 0 {
 			if err := syscall.Kill(c.Pid, syscall.SIGKILL); err != nil {

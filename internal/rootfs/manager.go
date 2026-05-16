@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -99,6 +100,11 @@ func extractTar(r io.Reader, destPath string) error {
 		}
 
 		target := filepath.Join(destPath, header.Name)
+
+		// Guard against zip-slip: ensure target stays inside destPath
+		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), filepath.Clean(destPath)+string(os.PathSeparator)) {
+			return fmt.Errorf("illegal path in tar archive: %s", header.Name)
+		}
 
 		// Ensure the parent directory exists
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"gocount/internal/container"
@@ -201,11 +202,6 @@ func isProcessRunning(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// Send signal 0 to check if process exists
-	err = process.Signal(os.Signal(nil))
+	err = process.Signal(syscall.Signal(0))
 	return err == nil
-}
-
-func init() {
-	rootCmd.AddCommand(inspectCmd)
 }

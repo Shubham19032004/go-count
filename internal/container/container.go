@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"os"
 	"strings"
-	"time"
 )
 
 type Container struct {
@@ -19,10 +18,6 @@ type Container struct {
 }
 
 var Containers = map[string]*Container{}
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 func GenerateID() string {
 	letters := "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -56,9 +51,16 @@ func LoadContainers() ([]*Container, error) {
 		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
 			continue
 		}
-		data, _ := os.ReadFile("/tmp/gocount/" + f.Name())
+		data, err := os.ReadFile("/tmp/gocount/" + f.Name())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not read %s: %v\n", f.Name(), err)
+			continue
+		}
 		var c Container
-		json.Unmarshal(data, &c)
+		if err := json.Unmarshal(data, &c); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not parse %s: %v\n", f.Name(), err)
+			continue
+		}
 		containers = append(containers, &c)
 	}
 	return containers, nil

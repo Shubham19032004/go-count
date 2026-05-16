@@ -107,9 +107,6 @@ var runCmd = &cobra.Command{
 			fmt.Println("Error saving container:", err)
 		}
 
-		// Register container
-		container.AddContainer(id, command.Process.Pid, args, rootdir)
-
 		if err := command.Wait(); err != nil {
 			fmt.Println("Error:", err)
 		}
@@ -155,7 +152,8 @@ var startCmd = &cobra.Command{
 		command.SysProcAttr = &syscall.SysProcAttr{
 			Cloneflags: syscall.CLONE_NEWUTS |
 				syscall.CLONE_NEWPID |
-				syscall.CLONE_NEWNS,
+				syscall.CLONE_NEWNS |
+				syscall.CLONE_NEWNET,
 		}
 
 		if err := command.Start(); err != nil {
