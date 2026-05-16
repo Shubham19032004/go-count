@@ -17,4 +17,13 @@ build:
 cm:
 	sudo /usr/local/go/bin/go run main.go run --memory 100M --cpu "100 100000" /bin/sh
 
- 
+test-memory:
+	@ROOTFS=$$(ls -dt /tmp/gocount/*/rootfs 2>/dev/null | head -1); \
+	if [ -z "$$ROOTFS" ]; then \
+		echo "No rootfs found. Run 'make container' first to create one, then re-run."; \
+		exit 1; \
+	fi; \
+	echo "Copying test.py into $$ROOTFS ..."; \
+	sudo cp test.py $$ROOTFS/test.py; \
+	echo "Running container with 50M memory limit..."; \
+	sudo /usr/local/go/bin/go run main.go run --memory 50M /usr/bin/python3 /test.py
